@@ -1,0 +1,50 @@
+{
+  "name": "ascend-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "build": "remix vite:build",
+    "dev": "remix vite:dev",
+    "start": "remix-serve ./build/server/index.js",
+    "setup": "prisma generate && prisma migrate deploy",
+    "generate": "prisma generate",
+    "seed": "tsx prisma/seed.ts",
+    "typecheck": "tsc --noEmit",
+    "vercel-build": "npm run build -w @ascend/shared && prisma generate && prisma migrate deploy && remix vite:build"
+  },
+  "dependencies": {
+    "@ascend/shared": "*",
+    "@prisma/client": "^6.19.3",
+    "@remix-run/node": "2.16.7",
+    "@remix-run/react": "2.16.7",
+    "@remix-run/serve": "2.16.7",
+    "@shopify/app-bridge-react": "^4.2.1",
+    "@shopify/polaris": "^13.9.5",
+    "@shopify/shopify-api": "^13.0.0",
+    "@shopify/shopify-app-remix": "^4.2.1",
+    "@shopify/shopify-app-session-storage": "^5.0.0",
+    "@shopify/shopify-app-session-storage-prisma": "^9.0.1",
+    "@supabase/supabase-js": "^2.49.0",
+    "@vercel/remix": "2.16.7",
+    "isbot": "^5.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@faker-js/faker": "^9.4.0",
+    "@remix-run/dev": "2.16.7",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "prisma": "^6.19.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.21",
+    "vite-tsconfig-paths": "^5.1.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

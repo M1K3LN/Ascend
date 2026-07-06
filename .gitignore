@@ -1,0 +1,13 @@
+node_modules
+.env
+.env.*
+!.env.example
+build
+dist
+.cache
+.shopify
+.vercel
+coverage
+*.tsbuildinfo
+*.log
+.DS_Store

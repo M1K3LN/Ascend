@@ -1,0 +1,467 @@
+// Ascend — ambassador marketing platform.
+//
+// Runtime connects through the Supavisor TRANSACTION pooler (port 6543,
+// pgbouncer=true&connection_limit=1); migrations use DIRECT_URL (port 5432).
+// RLS is enabled deny-all on every table (see supabase/migrations) — all
+// access flows through the server with the service role / postgres user.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Shopify OAuth sessions (PrismaSessionStorage shape) ─────────────────────
+// accessToken holds AES-256-GCM ciphertext ("enc:v1:..."), never plaintext.
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+
+  @@index([shop])
+  @@map("sessions")
+}
+
+// ─── Core tenancy ────────────────────────────────────────────────────────────
+
+enum SendingDomainStatus {
+  UNCONFIGURED
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+model Merchant {
+  id                   String              @id @default(cuid())
+  shopDomain           String              @unique @map("shop_domain") // e.g. acme.myshopify.com
+  shopSlug             String              @unique @map("shop_slug") // public URL slug for /a/:shopSlug/*
+  encryptedAccessToken String?             @map("encrypted_access_token") // AES-256-GCM, offline token copy for jobs
+  plan                 String              @default("free")
+  currency             String              @default("USD")
+  sendingDomain        String?             @map("sending_domain")
+  sendingDomainStatus  SendingDomainStatus @default(UNCONFIGURED) @map("sending_domain_status")
+  settings             Json                @default("{}") // brand color, join-page copy, etc.
+  installedAt          DateTime            @default(now()) @map("installed_at")
+  uninstalledAt        DateTime?           @map("uninstalled_at")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+
+  ambassadors     Ambassador[]
+  programs        Program[]
+  ledgerEntries   LedgerEntry[]
+  referrals       Referral[]
+  discountConfigs DiscountConfig[]
+  emailTemplates  EmailTemplate[]
+  emailSends      EmailSend[]
+  campaigns       Campaign[]
+  flows           Flow[]
+  importJobs      ImportJob[]
+  productCache    ProductCache[]
+  sendQuota       SendQuota?
+
+  @@map("merchants")
+}
+
+// ─── Program (commission structure + attribution settings) ──────────────────
+
+enum CommissionType {
+  PERCENT
+  FLAT
+  TIERED
+}
+
+model Program {
+  id                   String         @id @default(cuid())
+  merchantId           String         @map("merchant_id")
+  name                 String         @default("Default program")
+  isDefault            Boolean        @default(true) @map("is_default")
+  commissionType       CommissionType @default(PERCENT) @map("commission_type")
+  percentBps           Int?           @default(1000) @map("percent_bps") // 1000 = 10%
+  flatCents            Int?           @map("flat_cents")
+  tiers                Json?          // { "default": {"percentBps":1000}, "gold": {...} }
+  cookieWindowDays     Int            @default(30) @map("cookie_window_days")
+  autoApproveAmbassadors Boolean      @default(false) @map("auto_approve_ambassadors")
+  autoApproveReferrals Boolean        @default(true) @map("auto_approve_referrals")
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, isDefault])
+  @@map("programs")
+}
+
+// ─── Ambassadors ─────────────────────────────────────────────────────────────
+
+enum AmbassadorStatus {
+  PENDING
+  ACTIVE
+  INACTIVE
+  REJECTED
+}
+
+model Ambassador {
+  id                String           @id @default(cuid())
+  merchantId        String           @map("merchant_id")
+  name              String
+  email             String
+  status            AmbassadorStatus @default(PENDING)
+  tier              String           @default("default")
+  shopifyCustomerId String?          @map("shopify_customer_id")
+  referralSlug      String           @map("referral_slug")
+  tags              String[]         @default([])
+  // Email suppression (hard bounce / complaint) — Phase 2 populates this.
+  suppressedAt      DateTime?        @map("suppressed_at")
+  suppressedReason  String?          @map("suppressed_reason")
+  notes             String?
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  merchant       Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  ledgerEntries  LedgerEntry[]
+  referrals      Referral[]
+  discountConfig DiscountConfig?
+  emailSends     EmailSend[]
+
+  @@unique([merchantId, email])
+  @@unique([merchantId, referralSlug])
+  @@index([merchantId, status])
+  @@index([merchantId, shopifyCustomerId])
+  @@map("ambassadors")
+}
+
+// ─── Append-only money ledger ────────────────────────────────────────────────
+// Balances are ALWAYS derived (ambassador_balances view / computeBalances) —
+// never stored. A DB trigger rejects UPDATE/DELETE (see supabase/migrations).
+
+enum LedgerType {
+  COMMISSION_EARNED
+  COMMISSION_REVERSED
+  CREDIT_ISSUED
+  CREDIT_REDEEMED
+  CREDIT_EXPIRED
+  PAYOUT
+}
+
+model LedgerEntry {
+  id             String     @id @default(cuid())
+  merchantId     String     @map("merchant_id")
+  ambassadorId   String     @map("ambassador_id")
+  type           LedgerType
+  amountCents    Int        @map("amount_cents") // signed: earned/issued > 0, reversed/redeemed/payout <= 0
+  currency       String
+  orderId        String?    @map("order_id")
+  referralId     String?    @map("referral_id")
+  expiresAt      DateTime?  @map("expires_at") // for CREDIT_ISSUED
+  memo           String?
+  idempotencyKey String     @unique @map("idempotency_key")
+  createdAt      DateTime   @default(now()) @map("created_at")
+
+  merchant   Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  ambassador Ambassador @relation(fields: [ambassadorId], references: [id], onDelete: Cascade)
+
+  @@index([ambassadorId, type])
+  @@index([merchantId, type, createdAt])
+  @@index([orderId])
+  @@map("ledger_entries")
+}
+
+// ─── Referrals (attributed orders) ───────────────────────────────────────────
+
+enum AttributionMethod {
+  CODE
+  LINK
+  CUSTOMER
+}
+
+enum ReferralStatus {
+  PENDING
+  APPROVED
+  PAID
+  REVERSED
+}
+
+model Referral {
+  id                 String            @id @default(cuid())
+  merchantId         String            @map("merchant_id")
+  ambassadorId       String            @map("ambassador_id")
+  orderId            String            @map("order_id")
+  orderName          String?           @map("order_name")
+  attributionMethod  AttributionMethod @map("attribution_method")
+  matchedValue       String?           @map("matched_value") // the code/slug/customer id that matched
+  orderSubtotalCents Int               @map("order_subtotal_cents")
+  orderTotalCents    Int               @map("order_total_cents")
+  commissionCents    Int               @map("commission_cents")
+  currency           String
+  status             ReferralStatus    @default(PENDING)
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+
+  merchant   Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  ambassador Ambassador @relation(fields: [ambassadorId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, orderId])
+  @@index([ambassadorId, status])
+  @@index([merchantId, createdAt])
+  @@map("referrals")
+}
+
+// ─── Discount config (Phase 3 syncs this to Shopify + metafield) ────────────
+
+enum DiscountSyncStatus {
+  DRAFT
+  QUEUED
+  SYNCED
+  FAILED
+}
+
+model DiscountConfig {
+  id                     String             @id @default(cuid())
+  merchantId             String             @map("merchant_id")
+  ambassadorId           String             @unique @map("ambassador_id")
+  code                   String
+  rules                  Json               // { productDiscounts:[], orderDiscount:{}, shippingDiscount:{} }
+  usageLimit             Int?               @map("usage_limit")
+  expiresAt              DateTime?          @map("expires_at")
+  restrictToNewCustomers Boolean            @default(false) @map("restrict_to_new_customers")
+  syncStatus             DiscountSyncStatus @default(DRAFT) @map("sync_status")
+  shopifyDiscountId      String?            @map("shopify_discount_id")
+  lastSyncError          String?            @map("last_sync_error")
+  createdAt              DateTime           @default(now()) @map("created_at")
+  updatedAt              DateTime           @updatedAt @map("updated_at")
+
+  merchant   Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  ambassador Ambassador @relation(fields: [ambassadorId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, code])
+  @@map("discount_configs")
+}
+
+// ─── Email (Phase 2 fills these in; schema is ready now) ────────────────────
+
+enum EmailTrigger {
+  MANUAL
+  CREDIT_ISSUED
+  CREDIT_EXPIRING
+  INACTIVITY_30D
+  NEW_PRODUCT
+}
+
+model EmailTemplate {
+  id        String       @id @default(cuid())
+  merchantId String      @map("merchant_id")
+  name      String
+  subject   String
+  body      String       // LiquidJS source
+  trigger   EmailTrigger @default(MANUAL)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  merchant   Merchant    @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  emailSends EmailSend[]
+  campaigns  Campaign[]
+
+  @@map("email_templates")
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  CANCELLED
+}
+
+model Campaign {
+  id          String         @id @default(cuid())
+  merchantId  String         @map("merchant_id")
+  templateId  String         @map("template_id")
+  name        String
+  segment     Json           @default("{}") // filters over ambassador fields + balances
+  status      CampaignStatus @default(DRAFT)
+  scheduledAt DateTime?      @map("scheduled_at")
+  totalQueued Int            @default(0) @map("total_queued")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  merchant   Merchant      @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  template   EmailTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  emailSends EmailSend[]
+
+  @@map("campaigns")
+}
+
+enum EmailSendStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  BOUNCED
+  COMPLAINED
+  OPENED
+  CLICKED
+  FAILED
+  SUPPRESSED
+}
+
+model EmailSend {
+  id                String          @id @default(cuid())
+  merchantId        String          @map("merchant_id")
+  campaignId        String?         @map("campaign_id")
+  templateId        String?         @map("template_id")
+  ambassadorId      String          @map("ambassador_id")
+  subject           String
+  renderedBody      String          @map("rendered_body") // snapshot at send time
+  status            EmailSendStatus @default(QUEUED)
+  providerMessageId String?         @map("provider_message_id")
+  error             String?
+  idempotencyKey    String          @unique @map("idempotency_key") // (campaignId, ambassadorId)
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  merchant   Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  campaign   Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  template   EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  ambassador Ambassador     @relation(fields: [ambassadorId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, status])
+  @@index([providerMessageId])
+  @@map("email_sends")
+}
+
+model Flow {
+  id         String       @id @default(cuid())
+  merchantId String       @map("merchant_id")
+  name       String
+  trigger    EmailTrigger
+  // [{ delayHours: number, templateId: string }] — delays are pgmq messages
+  // with future visibility or pg_cron scans; never in-memory timers.
+  steps      Json         @default("[]")
+  enabled    Boolean      @default(false)
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@map("flows")
+}
+
+// ─── Operational tables ──────────────────────────────────────────────────────
+
+// Idempotency guard: one row per Shopify webhook delivery (X-Shopify-Webhook-Id).
+model WebhookEvent {
+  id          String    @id // Shopify webhook id
+  shop        String
+  topic       String
+  receivedAt  DateTime  @default(now()) @map("received_at")
+  processedAt DateTime? @map("processed_at")
+
+  @@index([shop, topic])
+  @@map("webhook_events")
+}
+
+enum ImportStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model ImportJob {
+  id          String       @id @default(cuid())
+  merchantId  String       @map("merchant_id")
+  filename    String
+  storagePath String       @map("storage_path") // Supabase Storage object path
+  status      ImportStatus @default(QUEUED)
+  totalRows   Int          @default(0) @map("total_rows")
+  created     Int          @default(0)
+  duplicates  Int          @default(0)
+  errors      Json         @default("[]")
+  failReason  String?      @map("fail_reason")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@map("import_jobs")
+}
+
+// Poisoned queue messages land here after max delivery attempts (admin UI: /app/jobs).
+model DeadLetter {
+  id        String   @id @default(cuid())
+  queue     String
+  msgId     String   @map("msg_id")
+  payload   Json
+  error     String
+  attempts  Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([queue, createdAt])
+  @@map("dead_letters")
+}
+
+enum GdprRequestType {
+  CUSTOMERS_DATA_REQUEST
+  CUSTOMERS_REDACT
+  SHOP_REDACT
+}
+
+model GdprRequest {
+  id          String          @id @default(cuid())
+  shop        String
+  type        GdprRequestType
+  payload     Json
+  status      String          @default("received") // received | completed
+  completedAt DateTime?       @map("completed_at")
+  createdAt   DateTime        @default(now()) @map("created_at")
+
+  @@map("gdpr_requests")
+}
+
+// ─── Phase 2 support tables (created now so migrations stay linear) ─────────
+
+// 10-minute product price cache for LiquidJS `product()` helper.
+model ProductCache {
+  id          String   @id @default(cuid())
+  merchantId  String   @map("merchant_id")
+  handle      String
+  productId   String   @map("product_id")
+  title       String
+  priceCents  Int      @map("price_cents")
+  currency    String
+  imageUrl    String?  @map("image_url")
+  fetchedAt   DateTime @default(now()) @map("fetched_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, handle])
+  @@map("product_cache")
+}
+
+// Per-merchant send quota + warm-up state; reset daily by pg_cron.
+model SendQuota {
+  merchantId      String    @id @map("merchant_id")
+  dailyCap        Int       @default(200) @map("daily_cap") // warm-up day 1
+  sentToday       Int       @default(0) @map("sent_today")
+  warmupStartedAt DateTime? @map("warmup_started_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@map("send_quotas")
+}

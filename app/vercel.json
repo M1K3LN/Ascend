@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "remix",
+  "installCommand": "npm install",
+  "buildCommand": "npm run vercel-build",
+  "crons": [
+    { "path": "/api/jobs/drain?queue=webhooks", "schedule": "* * * * *" },
+    { "path": "/api/jobs/drain?queue=imports", "schedule": "* * * * *" },
+    { "path": "/api/jobs/drain?queue=emails", "schedule": "* * * * *" },
+    { "path": "/api/jobs/drain?queue=discount_sync", "schedule": "* * * * *" }
+  ]
+}
