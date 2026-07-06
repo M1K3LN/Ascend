@@ -54,15 +54,25 @@ supabase/migrations/    pgmq queues, RLS deny-all, balances view, append-only
    → set **Root Directory = `app`** (leave "Include files outside root
    directory" on — the build needs `packages/shared`). Add all env vars from
    `.env.example` (incl. `CRON_SECRET` — Vercel sends it on cron invocations
-   automatically). `app/vercel.json` supplies framework/build settings and the
-   per-minute drain crons; the build runs shared build + `prisma generate` +
-   Remix build (`prisma migrate deploy` is NOT part of the build — apply
-   migrations via Supabase MCP/SQL editor, or run `npm run setup` locally).
+   automatically). `app/vercel.json` supplies framework/build settings; the
+   build runs shared build + `prisma generate` + Remix build
+   (`prisma migrate deploy` is NOT part of the build — apply migrations via
+   Supabase MCP/SQL editor, or run `npm run setup` locally).
 
-   **Hobby plan note**: per-minute crons require Vercel Pro. On Hobby, delete
-   the `crons` block from `app/vercel.json` and use the included GitHub
-   Actions fallback (`.github/workflows/drain-queues.yml`, every 5 min) by
-   setting the `APP_URL` and `CRON_SECRET` repository secrets.
+   **Queue drains**: on Hobby plans (per-minute Vercel crons require Pro) the
+   included GitHub Actions workflow (`.github/workflows/drain-queues.yml`)
+   pings the drain endpoints every 5 minutes — set the `APP_URL` and
+   `CRON_SECRET` repository secrets to activate it. On Pro, prefer native
+   crons by adding this to `app/vercel.json`:
+
+   ```json
+   "crons": [
+     { "path": "/api/jobs/drain?queue=webhooks", "schedule": "* * * * *" },
+     { "path": "/api/jobs/drain?queue=imports", "schedule": "* * * * *" },
+     { "path": "/api/jobs/drain?queue=emails", "schedule": "* * * * *" },
+     { "path": "/api/jobs/drain?queue=discount_sync", "schedule": "* * * * *" }
+   ]
+   ```
 
 ## Invariants (do not break)
 
