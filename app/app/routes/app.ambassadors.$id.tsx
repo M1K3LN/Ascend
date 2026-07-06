@@ -17,6 +17,7 @@ import type { AmbassadorStatus } from "@prisma/client";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { requireMerchantByShop } from "../lib/merchant.server";
+import { eraseAmbassador } from "../lib/tenant-erasure.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -89,7 +90,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const intent = String(formData.get("intent") || "");
 
   if (intent === "delete") {
-    await prisma.ambassador.deleteMany({ where: { id: params.id, merchantId: merchant.id } });
+    await eraseAmbassador(merchant.id, params.id!);
     return redirect("/app/ambassadors");
   }
 

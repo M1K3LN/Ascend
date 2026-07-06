@@ -10,6 +10,7 @@ import {
 } from "@ascend/shared";
 import { Prisma } from "@prisma/client";
 import prisma from "../db.server";
+import { eraseMerchant } from "../lib/tenant-erasure.server";
 import { csvImportDeps, orderCreatedDeps, refundDeps } from "./deps.server";
 
 /**
@@ -115,7 +116,9 @@ async function dispatchWebhook(job: WebhookJob): Promise<void> {
     case "shop/redact": {
       const request = await recordGdpr(job, "SHOP_REDACT");
       // Full tenant deletion — cascades to ambassadors, ledger, referrals, etc.
-      await prisma.merchant.deleteMany({ where: { shopDomain: job.shop } });
+      // (eraseMerchant sets the transaction-local flag the append-only ledger
+      // trigger requires for DELETE).
+      await eraseMerchant(job.shop);
       await prisma.session.deleteMany({ where: { shop: job.shop } });
       await completeGdpr(request.id);
       break;
