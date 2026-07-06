@@ -50,10 +50,19 @@ supabase/migrations/    pgmq queues, RLS deny-all, balances view, append-only
    `shopify.app.toml` + `.env` (`SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`).
 3. **Local dev**: `npm run dev` (Shopify CLI tunnels to a dev store; webhooks
    are registered declaratively from `shopify.app.toml`).
-4. **Vercel**: import the repo, set **Root Directory = `app`**, add all env
-   vars from `.env.example` (incl. `CRON_SECRET` — Vercel sends it on cron
-   invocations automatically). `app/vercel.json` defines the per-minute drain
-   crons; `npm run vercel-build` runs shared build + prisma migrate + Remix build.
+4. **Vercel**: [vercel.com/new](https://vercel.com/new) → import `M1K3LN/Ascend`
+   → set **Root Directory = `app`** (leave "Include files outside root
+   directory" on — the build needs `packages/shared`). Add all env vars from
+   `.env.example` (incl. `CRON_SECRET` — Vercel sends it on cron invocations
+   automatically). `app/vercel.json` supplies framework/build settings and the
+   per-minute drain crons; the build runs shared build + `prisma generate` +
+   Remix build (`prisma migrate deploy` is NOT part of the build — apply
+   migrations via Supabase MCP/SQL editor, or run `npm run setup` locally).
+
+   **Hobby plan note**: per-minute crons require Vercel Pro. On Hobby, delete
+   the `crons` block from `app/vercel.json` and use the included GitHub
+   Actions fallback (`.github/workflows/drain-queues.yml`, every 5 min) by
+   setting the `APP_URL` and `CRON_SECRET` repository secrets.
 
 ## Invariants (do not break)
 

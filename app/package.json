@@ -12,7 +12,7 @@
     "generate": "prisma generate",
     "seed": "tsx prisma/seed.ts",
     "typecheck": "tsc --noEmit",
-    "vercel-build": "npm run build -w @ascend/shared && prisma generate && prisma migrate deploy && remix vite:build"
+    "vercel-build": "npm run build -w @ascend/shared && prisma generate && remix vite:build"
   },
   "dependencies": {
     "@ascend/shared": "*",
