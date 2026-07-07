@@ -5,12 +5,24 @@ import prisma from "./db.server";
 import { EncryptedSessionStorage } from "./lib/session-storage.server";
 import { upsertMerchantFromSession } from "./lib/merchant.server";
 
+// App URL: explicit env var, else Vercel's production domain (system env),
+// so the app can boot (public pages, healthz) before Shopify creds are set.
+const appUrl =
+  process.env.SHOPIFY_APP_URL ||
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "");
+
+if (!process.env.SHOPIFY_API_SECRET) {
+  console.warn(
+    "[shopify] SHOPIFY_API_SECRET is not set — OAuth/webhooks will fail until real Shopify app credentials are configured.",
+  );
+}
+
 const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
+  apiKey: process.env.SHOPIFY_API_KEY || "placeholder-api-key",
+  apiSecretKey: process.env.SHOPIFY_API_SECRET || "placeholder-api-secret",
   apiVersion: ApiVersion.April25,
-  scopes: process.env.SCOPES?.split(","),
-  appUrl: process.env.SHOPIFY_APP_URL || "",
+  scopes: (process.env.SCOPES || "read_orders,read_customers,read_products,write_discounts").split(","),
+  appUrl,
   authPathPrefix: "/auth",
   sessionStorage: new EncryptedSessionStorage(new PrismaSessionStorage(prisma)),
   distribution: AppDistribution.AppStore,
