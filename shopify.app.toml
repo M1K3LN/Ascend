@@ -3,7 +3,7 @@
 client_id = "REPLACE_WITH_CLIENT_ID"
 name = "Ascend Ambassadors"
 handle = "ascend-ambassadors"
-application_url = "https://ascend-app.vercel.app"
+application_url = "https://ascend-app-eight-bay.vercel.app"
 embedded = true
 
 [build]
@@ -17,9 +17,9 @@ scopes = "read_orders,read_customers,read_products,write_discounts"
 
 [auth]
 redirect_urls = [
-  "https://ascend-app.vercel.app/auth/callback",
-  "https://ascend-app.vercel.app/auth/login",
-  "https://ascend-app.vercel.app/api/auth/callback"
+  "https://ascend-app-eight-bay.vercel.app/auth/callback",
+  "https://ascend-app-eight-bay.vercel.app/auth/login",
+  "https://ascend-app-eight-bay.vercel.app/api/auth/callback"
 ]
 
 [webhooks]
