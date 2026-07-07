@@ -15,6 +15,9 @@ function resolveDatabaseUrl(): string | undefined {
     const url = new URL(raw);
     if (!url.searchParams.has("pgbouncer")) url.searchParams.set("pgbouncer", "true");
     if (!url.searchParams.has("connection_limit")) url.searchParams.set("connection_limit", "1");
+    // With a single pooled connection, cold starts (session-table check +
+    // first loader query) can exceed Prisma's default 10s pool wait.
+    if (!url.searchParams.has("pool_timeout")) url.searchParams.set("pool_timeout", "30");
     return url.toString();
   } catch {
     return raw;
